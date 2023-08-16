@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import math
-from collections import OrderedDict
 
 '''
 2022.08.21 CCLab Study 과제 by sungminlee
@@ -168,61 +167,91 @@ class TransformerDecoderLayer(nn.Module):
         
         return layer_output        
 
-# 구현 2
+
+class MultiHeadAttentionLayer(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+    
+    def forward(self, qkv, mask):
+        query, key, value = qkv
+        
+        # spliting head
+        query = self.split_heads(query)
+        key = self.split_heads(key)
+        value = self.split_heads(value)
+        
+        # attention score + masking
+        attention_score = torch.matmul(query, key.transpose(-1, -2))
+        
+        if mask is None:
+            # mask for masked self-attention
+            batch_size, seq_len = query.size(0), query.size(2)
+            mask = torch.ones(batch_size, seq_len).unsqueeze(-1).expand(-1, -1, seq_len).unsqueeze(1)
+            mask = mask.triu(1)            
+        else:
+            mask = mask.unsqueeze(-1).expand(-1, -1, mask.size(1)).unsqueeze(1)
+            
+        masked_attention_score = attention_score.masked_fill(mask, -1e9)
+        
+        # attention weight
+        attention_weight = nn.functional.softmax(masked_attention_score, -1)
+        
+        # splited attention output
+        splited_attention_output = torch.matmul(attention_weight, value)
+        
+        # combined attention output
+        attention_output = self.combine_heads(splited_attention_output)
+        
+        return attention_output
+        
+    def split_heads(self, tensor):
+        batch_size, seq_len = tensor.size(0), tensor.size(1)
+        tensor = tensor.unsqueeze(-1).reshape(batch_size, seq_len, self.config.multi_head_num, -1).transpose(1, 2)
+        # tensor: [batch_size, num_heads, q or k seq_len, qkv_hidden_size]
+        
+        return tensor
+        
+    def combine_heads(self, tensor):
+        batch_size, seq_len = tensor.size(0), tensor.size(2)
+        combined_tensor = tensor.transpose(1, 2).reshape(batch_size, seq_len, -1)
+        
+        return combined_tensor
+
 class MultiHeadAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
         
-        self.heads = OrderedDict()
-        self.init_weight()
+        self.query_layer = nn.Linear(self.config.transformer_hidden_size, self.config.qkv_hidden_size * self.config.multi_head_num, bias=False)
+        self.key_layer = nn.Linear(self.config.transformer_hidden_size, self.config.qkv_hidden_size * self.config.multi_head_num, bias=False)
+        self.value_layer = nn.Linear(self.config.transformer_hidden_size, self.config.qkv_hidden_size * self.config.multi_head_num, bias=False)
+        self.output_layer = nn.Linear(self.config.transformer_hidden_size, self.config.transformer_hidden_size, bias=False)
+        self.attention_layer = MultiHeadAttentionLayer(self.config)
         
-    def init_weight(self):
-        for i in range(self.config.multi_head_num):
-            self.heads[f"key_weight_matrix {i}"] = nn.Linear(self.config.transformer_hidden_size, self.config.qkv_hidden_size)
-            self.heads[f"query_weight_matrix {i}"] = nn.Linear(self.config.transformer_hidden_size, self.config.qkv_hidden_size)
-            self.heads[f"value_weight_matrix {i}"] = nn.Linear(self.config.transformer_hidden_size, self.config.qkv_hidden_size)
+        self.init_weight(self.query_layer)
+        self.init_weight(self.key_layer)
+        self.init_weight(self.value_layer)
+        
+    def init_weight(self, param):
+        nn.init.xavier_uniform_(param.weight.data)
 
     def forward(self, input, attention_mask=None, encoder_output=None):
-        attention_outputs = []
-        batch_size = input.size(0)
-        seq_len = input.size(1)
-        
-        # Mask for masked self-attention
-        if attention_mask is None:
-            attention_mask = torch.ones(batch_size, seq_len, seq_len)
-            attention_mask = attention_mask.triu()
-        # Mask for self-attention
-        else:
-            attention_mask = attention_mask.unsqueeze(-1).expand(-1, -1, seq_len)
-        
-        for i in range(self.config.multi_head_num):
+        # query, key, value matrix
+        query = self.query_layer(input)
+        if encoder_output is None:
             # self-attention
-            if encoder_output is None:
-                self.heads[f"key_matrix {i}"] = self.heads[f"key_weight_matrix {i}"](input)
-                self.heads[f"query_matrix {i}"] = self.heads[f"query_weight_matrix {i}"](input)
-                self.heads[f"value_matrix {i}"] = self.heads[f"value_weight_matrix {i}"](input)
+            key = self.key_layer(input)
+            value = self.value_layer(input)
+        else:
             # cross-attention
-            else:
-                self.heads[f"key_matrix {i}"] = self.heads[f"key_weight_matrix {i}"](encoder_output)
-                self.heads[f"query_matrix {i}"] = self.heads[f"query_weight_matrix {i}"](input)
-                self.heads[f"value_matrix {i}"] = self.heads[f"value_weight_matrix {i}"](encoder_output)
+            key = self.key_layer(encoder_output)
+            value = self.value_layer(encoder_output)
         
-            # attention score
-            self.heads[f"attention_score {i}"] = torch.matmul(self.heads[f"query_matrix {i}"], self.heads[f"key_matrix {i}"].transpose(-2, -1))
-            # scaling
-            self.heads[f"attention_score {i}"] = self.heads[f"attention_score {i}"] / math.sqrt(self.config.qkv_hidden_size)
-            self.heads[f"attentoin_score {i}"] = self.heads[f"attention_score {i}"].masked_fill(attention_mask, -1e9)
-            # attention weight
-            self.heads[f"attention_weight {i}"] = nn.functional.softmax(self.heads[f"attention_score {i}"], -1)
-            # attention matrix
-            self.heads[f"attention_matrix {i}"] = torch.matmul(self.heads[f"attention_weight {i}"], self.heads[f"value_matrix {i}"])
-            attention_outputs.append(self.heads[f"attention_matrix {i}"])
-        
-        multi_head_attention_output = torch.cat(attention_outputs, -1)
-        
-        return multi_head_attention_output
+        attention_output = self.attention_layer((query, key, value), attention_mask)
+        output = self.output_layer(attention_output)
 
+        return output
             
 model_config = TransformerConfig()
 model = Transformer(config=model_config)
@@ -231,7 +260,6 @@ enc_input_ids_rand = torch.randint(0, 10, (5, 30))
 enc_attention_mask = torch.randint(0, 2, (5, 30))
 
 dec_input_ids_rand = torch.randint(0, 10, (5, 30))
-
 
 output = model(enc_input_ids=enc_input_ids_rand,  
                enc_attention_mask=enc_attention_mask,
