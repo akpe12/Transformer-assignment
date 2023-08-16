@@ -214,9 +214,9 @@ class MultiHeadAttentionLayer(nn.Module):
         
     def combine_heads(self, tensor):
         batch_size, seq_len = tensor.size(0), tensor.size(2)
-        combined_tensor = tensor.transpose(1, 2).reshape(batch_size, seq_len, -1)
+        tensor = tensor.transpose(1, 2).reshape(batch_size, seq_len, -1)
         
-        return combined_tensor
+        return tensor
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, config):
