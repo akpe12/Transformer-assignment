@@ -167,6 +167,41 @@ class TransformerDecoderLayer(nn.Module):
         
         return layer_output        
 
+# 구현 2
+class MultiHeadAttention(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        
+        self.query_layer = nn.Linear(self.config.transformer_hidden_size, self.config.qkv_hidden_size * self.config.multi_head_num, bias=False)
+        self.key_layer = nn.Linear(self.config.transformer_hidden_size, self.config.qkv_hidden_size * self.config.multi_head_num, bias=False)
+        self.value_layer = nn.Linear(self.config.transformer_hidden_size, self.config.qkv_hidden_size * self.config.multi_head_num, bias=False)
+        self.output_layer = nn.Linear(self.config.transformer_hidden_size, self.config.transformer_hidden_size, bias=False)
+        self.attention_layer = MultiHeadAttentionLayer(self.config)
+        
+        self.init_weight(self.query_layer)
+        self.init_weight(self.key_layer)
+        self.init_weight(self.value_layer)
+        
+    def init_weight(self, param):
+        nn.init.xavier_uniform_(param.weight.data)
+
+    def forward(self, input, attention_mask=None, encoder_output=None):
+        # query, key, value matrix
+        query = self.query_layer(input)
+        if encoder_output is None:
+            # self-attention
+            key = self.key_layer(input)
+            value = self.value_layer(input)
+        else:
+            # cross-attention
+            key = self.key_layer(encoder_output)
+            value = self.value_layer(encoder_output)
+        
+        attention_output = self.attention_layer((query, key, value), attention_mask)
+        output = self.output_layer(attention_output)
+
+        return output
 
 class MultiHeadAttentionLayer(nn.Module):
     def __init__(self, config):
@@ -217,41 +252,6 @@ class MultiHeadAttentionLayer(nn.Module):
         tensor = tensor.transpose(1, 2).reshape(batch_size, seq_len, -1)
         
         return tensor
-
-class MultiHeadAttention(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        
-        self.query_layer = nn.Linear(self.config.transformer_hidden_size, self.config.qkv_hidden_size * self.config.multi_head_num, bias=False)
-        self.key_layer = nn.Linear(self.config.transformer_hidden_size, self.config.qkv_hidden_size * self.config.multi_head_num, bias=False)
-        self.value_layer = nn.Linear(self.config.transformer_hidden_size, self.config.qkv_hidden_size * self.config.multi_head_num, bias=False)
-        self.output_layer = nn.Linear(self.config.transformer_hidden_size, self.config.transformer_hidden_size, bias=False)
-        self.attention_layer = MultiHeadAttentionLayer(self.config)
-        
-        self.init_weight(self.query_layer)
-        self.init_weight(self.key_layer)
-        self.init_weight(self.value_layer)
-        
-    def init_weight(self, param):
-        nn.init.xavier_uniform_(param.weight.data)
-
-    def forward(self, input, attention_mask=None, encoder_output=None):
-        # query, key, value matrix
-        query = self.query_layer(input)
-        if encoder_output is None:
-            # self-attention
-            key = self.key_layer(input)
-            value = self.value_layer(input)
-        else:
-            # cross-attention
-            key = self.key_layer(encoder_output)
-            value = self.value_layer(encoder_output)
-        
-        attention_output = self.attention_layer((query, key, value), attention_mask)
-        output = self.output_layer(attention_output)
-
-        return output
             
 model_config = TransformerConfig()
 model = Transformer(config=model_config)
